@@ -1,0 +1,144 @@
+---
+title: "week14"
+author: "Dana Tomeh"
+date: "4/24/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r, message=FALSE}
+library(RMariaDB)
+library(tidyverse)
+library(gvlma)
+library(stargazer)
+library(ggplot2)
+```
+
+
+# Data Import and Cleaning 
+
+```{r}
+con <- dbConnect(MariaDB(), 
+                 user="rnlander_8960r",
+                 password="rTCo.4vQ2vc-", 
+                 host="tntlab.org", 
+                 port = 3306) #This creates a connection to the host website on port 3306 that allows me to access all of the databases 
+dbGetQuery(con, "SHOW DATABASES;") #This allows me to see the databawses with the 3306 port on tntlab.org. It showed two different databases, rnlander_8960 and information_schema
+dbExecute(con, "USE rnlander_8960") #this allows us to use what is inside rnlander_8960, I opeend this one because its the course code, but I did also take a look at the other one to be sure 
+dbGetQuery(con, "SHOW TABLES") #This shows all the tables within rnlander_8960, there are three, socialmedia, demos, and responses
+#I opened up all three below to see what each table contained
+dbGetQuery(con, "SHOW columns 
+           FROM socialmedia;") #This has the field including a  code as well as social media types
+dbGetQuery(con, "SHOW columns 
+           FROM demos;") #This has demographics of the respondents including participant number, age, and sex
+dbGetQuery(con, "SHOW columns 
+           FROM responses;") #This has the fields they responded to, the device they responded on, and their social media use code as smu_code
+
+
+```
+
+```{r}
+
+#I put this here again so that I don't have to scroll back up and figure out what to rerun through the exploration and discovery that i did. I'll just rerun it from here every time the connection is lost. 
+con <- dbConnect(MariaDB(), 
+                 user="rnlander_8960r",
+                 password="rTCo.4vQ2vc-", 
+                 host="tntlab.org", 
+                 port = 3306)
+dbExecute(con, "USE rnlander_8960;")
+
+#Below we create the sql_tbl
+# SELECT statements select the identification number, the smu code, and the four privacy columns from the responses table which I renamed r. It also selects age  from the demographics table which i renamed d. It inner joins the selected columns from the responses table and the demographics table to keep everyone that has all responses. We then select the social media usage from the socialmedia table renamed sm and inner join that into the first two inner joined tables. We don't need to select r.ident or sm.code to use them in the inner join. The inner join allows us to keep all entries that are present in both tables 
+sql_tbl <- dbGetQuery(con, "SELECT r.ident, r.smu_code, r.rec_events, r.rec_products, r.rec_friends, r.rec_policial, d.age, sm.facebook, sm.twitter, sm.instagram, sm.youtube, sm.snapchat, sm.other 
+           FROM responses AS r 
+           INNER JOIN demos AS d
+           ON r.ident=d.participant_num
+           INNER JOIN socialmedia AS sm
+           ON r.smu_code = sm.code;")
+
+```
+
+## Creating the Tidy tibble 
+
+```{r}
+responses <- dbGetQuery(con, "SELECT *
+                      FROM responses;") %>%
+   select(ident, smu_code, rec_events, rec_products, rec_friends, rec_policial)
+
+demos <-dbGetQuery(con, "SELECT *
+                      FROM demos;") %>%
+  select(participant_num, age)
+
+socialmedia <-dbGetQuery(con, "SELECT *
+                      FROM socialmedia;") %>%
+  select(code, facebook, twitter, instagram, youtube, snapchat, other)
+
+tidy_tbl <- responses %>% 
+  inner_join(demos, by =c("ident"="participant_num")) %>%
+  inner_join(socialmedia, by=c("smu_code"="code"))
+```
+
+
+## Cleaning the tidy_tbl to do the moderation analysis 
+
+We need to end up with mean privacy score, age, and number of social media platforms 
+
+```{r}
+tidy_clean <- tidy_tbl %>%
+  as_tibble() %>%
+  mutate(rec_events = case_when(rec_events=="Not acceptable at all" ~1, rec_events=="Not very acceptable" ~2, rec_events =="Somewhat acceptable" ~3, rec_events =="Very acceptable" ~4, rec_events=="Refuse"~0), 
+         rec_products = case_when(rec_products=="Not acceptable at all" ~1, rec_products=="Not very acceptable" ~2, rec_products =="Somewhat acceptable" ~3, rec_products =="Very acceptable" ~4, rec_products=="Refuse"~0),
+        rec_friends = case_when(rec_friends=="Not acceptable at all" ~1, rec_friends=="Not very acceptable" ~2, rec_friends =="Somewhat acceptable" ~3, rec_friends =="Very acceptable" ~4, rec_friends=="Refuse"~0),
+        rec_policial = case_when(rec_policial=="Not acceptable at all" ~1, rec_policial=="Not very acceptable" ~2, rec_policial =="Somewhat acceptable" ~3, rec_policial =="Very acceptable" ~4, rec_policial=="Refuse"~0), 
+        facebook=case_when(facebook=="Facebook"~1, facebook=="Not selected"~0),
+        twitter=case_when(twitter=="Twitter"~1, twitter=="Not selected"~0),
+        instagram=case_when(instagram=="Instagram"~1, instagram=="Not selected"~0),
+        youtube=case_when(youtube=="YouTube"~1, youtube=="Not selected"~0),
+        snapchat=case_when(snapchat=="Snapchat"~1, snapchat=="Not selected"~0),
+        other=case_when(other=="Other"~1, other=="Not selected"~0)) 
+tidy_clean <- tidy_clean %>%
+  mutate(sm_num = rowSums(tidy_clean[8:13]),
+        privacy_score = rowMeans(tidy_clean[3:6], na.rm = FALSE))  %>%
+  select(age, privacy_score, sm_num) %>%
+  mutate(age = as.factor(age))
+  
+```
+
+# Analyses
+Do people that use more social media platforms (i.e., a larger count of platforms) (x variable) have greater acceptance of privacy intrusions (y variable) (i.e., a higher mean score across the 4-point scale), and do these differences vary by age (z variable)?
+
+The model below was fit with the continuous variable "privacy_score" which is the average privacy score on a 4-point scale as the y variable, the continuous variable "sm_num" which is the count of social media accounts a person has and the categorical variable "age" (with age in one of 5 age range categories) in the model and tested for the interactions of these two. 
+
+There is a lack of significance in the age-number of social media accounts interaction for any age group. The results below indicate that the number of social media accounts and 3 of the 5 age groups are significant predictors of privacy score, but that none of the moderation interactions are significant. 
+```{r}
+ fitMod <- lm(tidy_clean$privacy_score ~ tidy_clean$sm_num + tidy_clean$age + tidy_clean$sm_num*tidy_clean$age) #Model interacts IV & moderator
+summary(fitMod)
+```
+
+Also, 4 of the 5 assumptions for linearity are not met ...
+```{r}
+gvlma(fitMod)
+```
+```{r}
+stargazer(fitMod,type="text", title = "Number of Social Media Accounts and Age on Privacy")
+```
+
+
+
+# Visualization
+
+Here I provide the plot of the model tested above. The first graph includes the points, but the second does not to make it easier to see the relationships split up by age. The visualization does show that the lines for the 50-64 and 65+ age groups cross, but the analyses above indicate that this interaction is not significant. 
+```{r, warning= FALSE}
+ggplot(tidy_clean, aes(x=sm_num, y=privacy_score, color=age))+
+  geom_jitter() + 
+  geom_smooth(method="lm", se=FALSE)
+
+ggplot(tidy_clean, aes(x=sm_num, y=privacy_score, color=age))+
+  geom_smooth(method="lm", se=FALSE)
+
+```
+
